@@ -4,19 +4,15 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 
-// Records a timestamp for each human message and each LLM response, plus how
-// long the LLM turn took. After every exchange it injects an inline custom
-// message into the session so the timing shows in the TUI transcript AND in
-// `/export` / `/share` output.
+// Records input/finish timestamps and total duration for each settled exchange.
+// Adds a live timer to Pi's Working indicator and persists one custom message
+// so the final timing appears in the TUI transcript and `/export` / `/share`.
 //
 // The injected messages are stripped from the LLM context (via the `context`
 // event) so they never pollute the conversation the model sees.
 //
-// Delivery detail: `pi.sendMessage()` only persists a display-only block
-// (without triggering another LLM turn) when the agent is idle. During
-// `agent_end` the session is still "streaming", so injecting there would take
-// the steer/follow-up path and loop forever. We therefore queue the block and
-// flush it once the agent is idle (deferred tick, next `input`, or shutdown).
+// `agent_end` can be followed by retries/recovery/continuations. Keep one
+// start time until `agent_settled`, then explicitly send without a new turn.
 
 const CUSTOM_TYPE = "timestamp";
 
@@ -68,9 +64,7 @@ export default function (pi: ExtensionAPI) {
   // Markers for the exchange currently in flight.
   let humanAt: number | null = null;
   let turnStart: number | null = null;
-
-  // Timing blocks waiting to be persisted once the agent is idle.
-  const pending: TimingDetails[] = [];
+  let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   // Human-friendly duration: ms, s, "Xm Ys", or "Xh Ym Zs".
   const fmtDuration = (ms: number) => {
@@ -87,51 +81,70 @@ export default function (pi: ExtensionAPI) {
     return `${(ms / 1000).toFixed(1)}s`;
   };
 
-  // Persist any queued blocks, but only while idle so we never re-trigger the
-  // agent loop.
-  const flush = (ctx: ExtensionContext) => {
-    if (pending.length === 0 || !ctx.isIdle()) return;
-    for (const d of pending.splice(0)) {
-      pi.sendMessage({
-        customType: CUSTOM_TYPE,
-        content: `${fmtStamp(d.humanAt)} → LLM ${fmtStamp(
-          d.llmAt,
-        )} · turn took ${fmtDuration(d.turnMs)}`,
-        display: true,
-        details: d,
-      });
+  const reset = (ctx: ExtensionContext) => {
+    humanAt = null;
+    turnStart = null;
+    if (refreshTimer !== undefined) {
+      clearInterval(refreshTimer);
+      refreshTimer = undefined;
+      ctx.ui.setWorkingMessage();
     }
   };
 
-  // A human sent a message — remember when, and flush any leftover blocks from
-  // the previous exchange (we're idle here, before the new turn starts).
-  pi.on("input", async (event, ctx) => {
-    if (event.source !== "extension") humanAt = Date.now();
-    flush(ctx);
+  // Queued/steering input must not replace the original exchange's timestamp.
+  pi.on("input", async (event) => {
+    if (event.source !== "extension" && turnStart === null) humanAt = Date.now();
     return { action: "continue" };
   });
 
-  // Mark the start of the LLM's work for duration measurement.
-  pi.on("agent_start", async () => {
+  pi.on("agent_start", async (_event, ctx) => {
+    // Automatic retries and continuations can start multiple low-level runs.
+    if (turnStart !== null) return;
     turnStart = Date.now();
+    humanAt ??= turnStart;
+    if (ctx.mode !== "tui") return;
+
+    // Only customize the label; Pi owns the spinner, layout, and redraws.
+    // Retry/compaction indicators retain their own labels while this counts on.
+    const updateWorkingMessage = () => {
+      if (turnStart === null) return;
+      const seconds = Math.floor(Math.max(0, Date.now() - turnStart) / 1000);
+      const hours = Math.floor(seconds / 3600);
+      const minutes = Math.floor((seconds % 3600) / 60);
+      let elapsed = `${seconds % 60}s`;
+      if (minutes > 0 || hours > 0) elapsed = `${minutes}m ${elapsed}`;
+      if (hours > 0) elapsed = `${hours}h ${elapsed}`;
+      ctx.ui.setWorkingMessage(`Working… · ${elapsed}`);
+    };
+    updateWorkingMessage();
+    refreshTimer = setInterval(updateWorkingMessage, 1000);
+    refreshTimer.unref();
   });
 
-  // The LLM finished — queue a timing block, then flush once idle.
-  pi.on("agent_end", async (_event, ctx) => {
+  // This is the final boundary, after automatic retries/recovery/queued work.
+  pi.on("agent_settled", async (_event, ctx) => {
+    if (turnStart === null) return;
     const llmAt = Date.now();
-    const turnMs = turnStart != null ? llmAt - turnStart : 0;
-    pending.push({ humanAt: humanAt ?? llmAt, llmAt, turnMs });
-    humanAt = null;
-    turnStart = null;
-    // Defer past the current streaming turn so sendMessage takes the
-    // idle/no-trigger path and persists without looping.
-    setTimeout(() => flush(ctx), 0);
+    const details: TimingDetails = {
+      humanAt: humanAt ?? turnStart,
+      llmAt,
+      turnMs: Math.max(0, llmAt - turnStart),
+    };
+    reset(ctx);
+    pi.sendMessage(
+      {
+        customType: CUSTOM_TYPE,
+        content: `${fmtStamp(details.humanAt)} → LLM ${fmtStamp(llmAt)} · turn took ${fmtDuration(details.turnMs)}`,
+        display: true,
+        details,
+      },
+      { triggerTurn: false },
+    );
   });
 
-  // Ensure the final exchange's block is persisted before exit (covers `-p`).
-  pi.on("session_shutdown", async (_event, ctx) => {
-    flush(ctx);
-  });
+  // Never carry timing state or a refresh timer across sessions/reloads.
+  pi.on("session_start", async (_event, ctx) => reset(ctx));
+  pi.on("session_shutdown", async (_event, ctx) => reset(ctx));
 
   // Keep our timing messages out of what the model sees.
   pi.on("context", async (event) => {

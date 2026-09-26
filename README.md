@@ -7,11 +7,17 @@ conversation.
 
 ## What it does
 
-- On each incoming message (`input` event) it records the send time.
-- On each LLM response it measures the turn duration (`agent_start` →
-  `agent_end`).
-- It injects an inline **custom message** into the session after every
-  exchange, e.g.:
+- Records the incoming message time and measures the full exchange from the
+  first `agent_start` to `agent_settled`, including retries, recovery, and
+  automatic continuations. Queued/steering input does not reset the clock.
+- While running in the TUI, adds an increasing timer to Pi's **Working
+  indicator**: `Working… · 1m 23s`, keeping the normal animated spinner.
+  It refreshes once per second and restores the default label when the exchange
+  settles. No extra widget or footer line is added.
+  Retry/compaction indicators keep their own labels; elapsed time continues
+  counting and reappears when Pi returns to Working.
+- Injects one inline **custom message** into the session after the whole
+  exchange settles (including stopped/failed exchanges), e.g.:
 
   ```
   ⏱ 2026-07-07 07:03:25 EDT → LLM 2026-07-07 07:03:30 EDT · turn took 4.8s
@@ -46,19 +52,36 @@ An unrecognized value falls back to the system timezone.
 PI_TIMESTAMP_TZ=UTC pi
 ```
 
-## How it stays loop-free
+## Lifecycle and compatibility
 
-`pi.sendMessage()` only persists a display-only block *without* triggering a new
-LLM turn when the agent is idle. During `agent_end` the session is still
-streaming, so the extension **queues** each block and flushes it once the agent
-is idle — on a deferred tick, at the next `input`, and at `session_shutdown`
-(which covers the final turn and `-p` single-shot runs).
+Uses Pi's `agent_settled` event, not `agent_end`: the latter can fire multiple
+times during one exchange as Pi retries errors. The final block is sent with
+`{ triggerTurn: false }`, so it cannot start another LLM turn. Requires Pi with
+`agent_settled` support; developed and tested against Pi 0.87.1.
+
+Print (`-p`), JSON, and RPC modes still record the final timestamp, without
+customizing the Working indicator. Refresh timers and timing state are cleared
+on session changes, reload, and shutdown. The live timer itself is not persisted.
+
+The live timer uses `ctx.ui.setWorkingMessage()`, a shared label rather than an
+append-only slot. Other extensions customizing this label can conflict.
 
 ## Layout
 
 ```
-package.json                     # pi package manifest (pi.extensions -> ./extensions)
+package.json                    # pi package manifest (pi.extensions -> ./extensions)
 extensions/timestamp-logger.ts   # the extension
+tests/timestamp-logger.test.mjs   # lifecycle and live-timer regression tests
+```
+
+## Development
+
+With Node.js 22.19+ (native TypeScript support):
+
+```bash
+npm install
+npm test
+npm run typecheck
 ```
 
 ## Install / use

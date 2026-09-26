@@ -1,18 +1,37 @@
 {
   "name": "pi-timestamp",
-  "version": "0.1.0",
-  "description": "Pi extension that logs per-exchange timestamps and LLM turn duration as an inline block.",
-  "keywords": ["pi-package"],
+  "version": "0.2.0",
+  "description": "Pi extension with a live turn timer and one inline timestamp per settled exchange.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "pi-package"
+  ],
   "license": "MIT",
   "pi": {
-    "extensions": ["./extensions"]
+    "extensions": [
+      "./extensions"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-coding-agent": { "optional": true },
-    "@earendil-works/pi-tui": { "optional": true }
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    },
+    "@earendil-works/pi-tui": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@earendil-works/pi-tui": "^0.87.1",
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
   }
 }
