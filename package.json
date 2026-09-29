@@ -1,6 +1,6 @@
 {
   "name": "pi-timestamp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Pi extension with a live turn timer and one inline timestamp per settled exchange.",
   "type": "module",
   "scripts": {

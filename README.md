@@ -10,12 +10,13 @@ conversation.
 - Records the incoming message time and measures the full exchange from the
   first `agent_start` to `agent_settled`, including retries, recovery, and
   automatic continuations. Queued/steering input does not reset the clock.
-- While running in the TUI, adds an increasing timer to Pi's **Working
-  indicator**: `Working… · 1m 23s`, keeping the normal animated spinner.
+- While running in the TUI, adds total elapsed time and time since the last
+  activity to Pi's **Working indicator**, keeping the normal animated spinner:
+  `Working… · 12m 30s total · last activity 2m 15s ago`.
   It refreshes once per second and restores the default label when the exchange
   settles. No extra widget or footer line is added.
-  Retry/compaction indicators keep their own labels; elapsed time continues
-  counting and reappears when Pi returns to Working.
+  Retry/compaction indicators keep their own labels; the clocks continue
+  counting and reappear when Pi returns to Working.
 - Injects one inline **custom message** into the session after the whole
   exchange settles (including stopped/failed exchanges), e.g.:
 
@@ -32,6 +33,20 @@ conversation.
 
 Duration formatting rolls up by magnitude: `850ms`, `5.1s`, `1m 30s`, or
 `2h 2m 5s`.
+
+## Last activity
+
+The activity clock starts with the exchange and resets on assistant message
+start/update/end (including streamed text, thinking, and tool arguments), or
+any tool starting, reporting partial output, or finishing. Parallel tools share
+one clock: the most recent event from any tool wins. The total clock never resets
+during an exchange. Spinner/timer redraws, input, and custom messages do not
+count as activity.
+
+This measures agent/tool events, not literal screen changes: collapsed thinking
+still counts, and a tool running silently can be healthy even when the activity
+clock is high. Activity is displayed on the next one-second refresh and isn't
+added to the final persisted timestamp.
 
 ## Timezones
 

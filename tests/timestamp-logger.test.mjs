@@ -82,19 +82,105 @@ test("one settled timestamp spans multiple failed runs and retry delays", async 
 test("live timer updates the Working label and restores the default on settlement", async (t) => {
   const h = setup(t);
   await h.emit("agent_start");
-  assert.equal(h.workingMessage, "Working… · 0s");
+  assert.equal(h.workingMessage, "Working… · 0s total · last activity 0s ago");
   h.advance(1_000);
   assert.equal(h.workingUpdates.length, 2);
-  assert.equal(h.workingMessage, "Working… · 1s");
+  assert.equal(h.workingMessage, "Working… · 1s total · last activity 1s ago");
   h.advance(82_000);
-  assert.equal(h.workingMessage, "Working… · 1m 23s");
+  assert.equal(h.workingMessage, "Working… · 1m 23s total · last activity 1m 23s ago");
   h.advance(3_600_000);
-  assert.equal(h.workingMessage, "Working… · 1h 1m 23s");
+  assert.equal(h.workingMessage, "Working… · 1h 1m 23s total · last activity 1h 1m 23s ago");
   await h.emit("agent_settled");
   assert.equal(h.workingMessage, undefined);
   const updates = h.workingUpdates.length;
   h.advance(5_000);
   assert.equal(h.workingUpdates.length, updates, "settlement stops refreshes");
+});
+
+const activityEvents = [
+  ["message_start", { message: { role: "assistant" } }],
+  ...["text_delta", "thinking_delta", "toolcall_delta"].map((type) => [
+    "message_update", {
+      message: { role: "assistant" },
+      assistantMessageEvent: { type, delta: "new output" },
+    },
+  ]),
+  ["message_end", { message: { role: "assistant" } }],
+  ["tool_execution_start", { toolCallId: "a", toolName: "bash" }],
+  ["tool_execution_update", { toolCallId: "a", toolName: "bash", partialResult: {} }],
+  ["tool_execution_end", { toolCallId: "a", toolName: "bash", result: {}, isError: false }],
+];
+
+for (const [event, data] of activityEvents) {
+  test(`${data.assistantMessageEvent?.type ?? event} resets activity, not total elapsed time`, async (t) => {
+    const h = setup(t);
+    await h.emit("agent_start");
+    h.advance(65_000);
+    const updates = h.workingUpdates.length;
+    await h.emit(event, data);
+    assert.equal(h.workingUpdates.length, updates, "activity does not repaint per token");
+    h.advance(0); // next refresh, without advancing the clock
+    assert.equal(h.workingMessage, "Working… · 1m 5s total · last activity 0s ago");
+    h.advance(5_000);
+    assert.equal(h.workingMessage, "Working… · 1m 10s total · last activity 5s ago");
+    await h.emit("agent_settled");
+    assert.equal(h.messages[0].details.turnMs, 70_000);
+  });
+}
+
+test("timer ticks, custom messages, input, and retry starts do not manufacture activity", async (t) => {
+  const h = setup(t);
+  await h.emit("agent_start");
+  h.advance(10_000);
+  await h.emit("message_update", { message: { role: "assistant" } });
+  h.advance(10_000);
+  await h.emit("input", { source: "interactive" });
+  for (const role of ["user", "custom"]) {
+    for (const event of ["message_start", "message_update", "message_end"]) {
+      await h.emit(event, { message: { role, customType: "timestamp" } });
+    }
+  }
+  await h.emit("agent_end");
+  h.advance(2_000);
+  await h.emit("agent_start");
+  h.advance(3_000);
+  assert.equal(h.workingMessage, "Working… · 25s total · last activity 15s ago");
+  assert.equal(h.intervals.size, 1);
+  await h.emit("agent_settled");
+});
+
+test("parallel tool activity uses the most recent update from any tool", async (t) => {
+  const h = setup(t);
+  await h.emit("agent_start");
+  await h.emit("tool_execution_start", { toolCallId: "a" });
+  h.advance(5_000);
+  await h.emit("tool_execution_start", { toolCallId: "b" });
+  h.advance(5_000);
+  await h.emit("tool_execution_update", { toolCallId: "a" });
+  h.advance(5_000);
+  assert.equal(h.workingMessage, "Working… · 15s total · last activity 5s ago");
+  await h.emit("tool_execution_end", { toolCallId: "b" });
+  h.advance(1_000);
+  assert.equal(h.workingMessage, "Working… · 16s total · last activity 1s ago");
+  await h.emit("agent_settled");
+});
+
+test("activity outside an exchange is ignored and a new exchange starts fresh", async (t) => {
+  const h = setup(t);
+  for (const [event, data] of activityEvents) await h.emit(event, data);
+  assert.deepEqual(h.workingUpdates, []);
+  await h.emit("agent_start");
+  h.advance(20_000);
+  await h.emit("agent_settled");
+  const updates = h.workingUpdates.length;
+  for (const [event, data] of activityEvents) await h.emit(event, data);
+  h.advance(60_000);
+  assert.equal(h.workingUpdates.length, updates);
+  await h.emit("agent_start");
+  assert.equal(h.workingMessage, "Working… · 0s total · last activity 0s ago");
+  h.advance(1_000);
+  assert.equal(h.workingMessage, "Working… · 1s total · last activity 1s ago");
+  await h.emit("agent_settled");
 });
 
 test("idle lifecycle events do not reset another extension's Working label", async (t) => {
@@ -144,6 +230,7 @@ for (const mode of ["print", "json", "rpc"]) {
     await h.emit("session_start");
     await h.emit("agent_start");
     h.advance(1_000);
+    for (const [event, data] of activityEvents) await h.emit(event, data);
     await h.emit("agent_end");
     await h.emit("agent_settled");
     await h.emit("session_shutdown");

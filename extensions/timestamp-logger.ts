@@ -5,7 +5,7 @@ import type {
 import { Box, Text } from "@earendil-works/pi-tui";
 
 // Records input/finish timestamps and total duration for each settled exchange.
-// Adds a live timer to Pi's Working indicator and persists one custom message
+// Adds total/activity timers to Pi's Working indicator and persists one message
 // so the final timing appears in the TUI transcript and `/export` / `/share`.
 //
 // The injected messages are stripped from the LLM context (via the `context`
@@ -64,6 +64,7 @@ export default function (pi: ExtensionAPI) {
   // Markers for the exchange currently in flight.
   let humanAt: number | null = null;
   let turnStart: number | null = null;
+  let lastActivityAt: number | null = null;
   let refreshTimer: ReturnType<typeof setInterval> | undefined;
 
   // Human-friendly duration: ms, s, "Xm Ys", or "Xh Ym Zs".
@@ -81,15 +82,42 @@ export default function (pi: ExtensionAPI) {
     return `${(ms / 1000).toFixed(1)}s`;
   };
 
+  // Live clocks use whole seconds, unlike the more precise persisted duration.
+  const fmtElapsed = (ms: number) => {
+    const seconds = Math.floor(Math.max(0, ms) / 1000);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    let elapsed = `${seconds % 60}s`;
+    if (minutes > 0 || hours > 0) elapsed = `${minutes}m ${elapsed}`;
+    if (hours > 0) elapsed = `${hours}h ${elapsed}`;
+    return elapsed;
+  };
+
   const reset = (ctx: ExtensionContext) => {
     humanAt = null;
     turnStart = null;
+    lastActivityAt = null;
     if (refreshTimer !== undefined) {
       clearInterval(refreshTimer);
       refreshTimer = undefined;
       ctx.ui.setWorkingMessage();
     }
   };
+
+  // Track agent/tool events, not redraws or our own custom timing messages.
+  // Only record the time here: the 1Hz refresh avoids repainting for every token.
+  const markActivity = () => {
+    if (turnStart !== null) lastActivityAt = Date.now();
+  };
+  const markAssistantActivity = (event: { message: { role: string } }) => {
+    if (event.message.role === "assistant") markActivity();
+  };
+  pi.on("message_start", markAssistantActivity);
+  pi.on("message_update", markAssistantActivity);
+  pi.on("message_end", markAssistantActivity);
+  pi.on("tool_execution_start", markActivity);
+  pi.on("tool_execution_update", markActivity);
+  pi.on("tool_execution_end", markActivity);
 
   // Queued/steering input must not replace the original exchange's timestamp.
   pi.on("input", async (event) => {
@@ -101,6 +129,7 @@ export default function (pi: ExtensionAPI) {
     // Automatic retries and continuations can start multiple low-level runs.
     if (turnStart !== null) return;
     turnStart = Date.now();
+    lastActivityAt = turnStart;
     humanAt ??= turnStart;
     if (ctx.mode !== "tui") return;
 
@@ -108,13 +137,10 @@ export default function (pi: ExtensionAPI) {
     // Retry/compaction indicators retain their own labels while this counts on.
     const updateWorkingMessage = () => {
       if (turnStart === null) return;
-      const seconds = Math.floor(Math.max(0, Date.now() - turnStart) / 1000);
-      const hours = Math.floor(seconds / 3600);
-      const minutes = Math.floor((seconds % 3600) / 60);
-      let elapsed = `${seconds % 60}s`;
-      if (minutes > 0 || hours > 0) elapsed = `${minutes}m ${elapsed}`;
-      if (hours > 0) elapsed = `${hours}h ${elapsed}`;
-      ctx.ui.setWorkingMessage(`Working… · ${elapsed}`);
+      const now = Date.now();
+      const elapsed = fmtElapsed(now - turnStart);
+      const quiet = fmtElapsed(now - (lastActivityAt ?? turnStart));
+      ctx.ui.setWorkingMessage(`Working… · ${elapsed} total · last activity ${quiet} ago`);
     };
     updateWorkingMessage();
     refreshTimer = setInterval(updateWorkingMessage, 1000);
