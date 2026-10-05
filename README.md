@@ -104,14 +104,14 @@ npm run typecheck
 Install as a pi package (global or project-local):
 
 ```bash
-pi install /Users/ewelch/projects/pi-timestamp        # global
-pi install -l /Users/ewelch/projects/pi-timestamp     # project-local
+pi install /Users/ewelch/projects/pi-extensions/pi-timestamp        # global
+pi install -l /Users/ewelch/projects/pi-extensions/pi-timestamp     # project-local
 ```
 
 Or reference the folder directly for a single run:
 
 ```bash
-pi -e /Users/ewelch/projects/pi-timestamp
+pi -e /Users/ewelch/projects/pi-extensions/pi-timestamp
 ```
 
 > Note: because this is a package, do not also drop the file in a project's
