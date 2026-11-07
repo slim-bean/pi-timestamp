@@ -72,7 +72,7 @@ PI_TIMESTAMP_TZ=UTC pi
 Uses Pi's `agent_settled` event, not `agent_end`: the latter can fire multiple
 times during one exchange as Pi retries errors. The final block is sent with
 `{ triggerTurn: false }`, so it cannot start another LLM turn. Requires Pi with
-`agent_settled` support; developed and tested against Pi 0.87.1.
+`agent_settled` support; development dependencies and type checks target Pi 1.5.0.
 
 Print (`-p`), JSON, and RPC modes still record the final timestamp, without
 customizing the Working indicator. Refresh timers and timing state are cleared
