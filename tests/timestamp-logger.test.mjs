@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import timestampLogger from "../extensions/timestamp-logger.ts";
 
 const START = Date.parse("2026-09-26T17:20:39Z");
@@ -271,6 +272,34 @@ test("an aborted run still produces exactly one timestamp when settled", async (
   await h.emit("session_shutdown");
   assert.equal(h.messages.length, 1);
   assert.equal(h.intervals.size, 0);
+});
+
+test("real host renderer keeps cached collapsed and expanded frames independent across resize", async (t) => {
+  const h = setup(t);
+  await h.emit("agent_start");
+  h.advance(1234);
+  await h.emit("agent_settled");
+  const renderer = h.renderers.get("timestamp");
+  const theme = { fg: (_tone, text) => text, bg: (_tone, text) => text };
+  const collapsed = renderer(h.messages[0], { expanded: false }, theme);
+  const expanded = renderer(h.messages[0], { expanded: true }, theme);
+  const first = collapsed.render(100);
+  const saved = [...first];
+  assert.match(first.join("\n"), /turn took 1\.2s/);
+  assert.doesNotMatch(first.join("\n"), /utc in:/);
+  for (const width of [100, 25, 8, 100]) {
+    const lines = expanded.render(width);
+    assert.ok(lines.every((line) => visibleWidth(line) <= width));
+  }
+  const details = expanded.render(100).join("\n");
+  assert.match(details, /utc in:  2026-09-26T17:20:39\.000Z/);
+  assert.match(details, /utc out: 2026-09-26T17:20:40\.234Z/);
+  assert.match(details, /turn:    1234ms/);
+  expanded.invalidate();
+  assert.deepEqual(expanded.render(100), details.split("\n"));
+  assert.deepEqual(first, saved, "expanded/resized output must not mutate the collapsed host frame");
+  assert.deepEqual(collapsed.render(100), saved);
+  assert.equal(h.messages.length, 1);
 });
 
 test("timing messages remain excluded from model context", async (t) => {
